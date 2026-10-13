@@ -93,11 +93,18 @@ festlegt und `OIDC_AUTHORIZATION_URL` auf den vom Browser erreichbaren
 Authorization-Endpunkt zeigt. Die App prüft den `iss`-Wert des ID-Tokens
 weiterhin exakt gegen `OIDC_ISSUER`; die Issuer-Prüfung wird nicht deaktiviert.
 
-Die Compose-Datei importiert `realm-export.json` derzeit nicht automatisch.
-Realm, Client, Benutzer und Rollen müssen daher weiterhin in Keycloak
-eingerichtet werden. Wenn der Export als versionierte Vorlage dienen soll,
-exportiere ihn nach Konfigurationsänderungen erneut und lasse Benutzer sowie
-Secrets aus der Datei heraus.
+Beim Start importiert Keycloak `realm-export.json`, sofern der Realm
+`go-realm` in der persistenten Keycloak-Datenbank noch nicht existiert.
+Keycloak sucht im Importverzeichnis nach Dateien mit dem Namensmuster
+`*-realm.json`; Compose bindet den Export deshalb im Container als
+`go-realm-realm.json` ein. Ein bereits vorhandener Realm wird übersprungen:
+Änderungen an der JSON-Datei überschreiben ihn nicht.
+
+Der Export enthält absichtlich weder Benutzer noch Client-Secrets. Nach einem
+Erstimport muss daher ein Testbenutzer angelegt und das Client-Secret in
+Keycloak mit `OIDC_CLIENT_SECRET` in der lokalen `.env` abgeglichen werden.
+Nach Änderungen am Realm den Export erneut erstellen. Für einen Import in den
+bereits vorhandenen Realm kann Keycloaks „Partial import“ verwendet werden.
 
 Die Compose-Datei enthält außerdem noch feste Zugangsdaten für die lokale
 Entwicklungsumgebung. Sie dürfen nicht für gemeinsam erreichbare oder

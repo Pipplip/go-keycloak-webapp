@@ -34,7 +34,9 @@ services:
 
   keycloak:
     image: quay.io/keycloak/keycloak:26.3
-    command: start-dev
+    command:
+      - start-dev
+      - --import-realm
     restart: unless-stopped
     depends_on:
       postgres:
@@ -51,6 +53,8 @@ services:
       KC_HEALTH_ENABLED: "true"
     ports:
       - "8081:8080"
+    volumes:
+      - ./realm-export.json:/opt/keycloak/data/import/go-realm-realm.json:ro
     healthcheck:
       test:
         - CMD
