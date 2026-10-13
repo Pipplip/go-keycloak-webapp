@@ -2,14 +2,18 @@ package main
 
 import (
 	"context"
-	"go-keycloak-webapp/internal/sessions"
 	"log"
 	"net/http"
+	"time"
 
 	"go-keycloak-webapp/internal/auth"
 	"go-keycloak-webapp/internal/config"
+	"go-keycloak-webapp/internal/database"
 	"go-keycloak-webapp/internal/handlers"
-	"go-keycloak-webapp/internal/middleware"
+	"go-keycloak-webapp/internal/sessions"
+	"go-keycloak-webapp/internal/users"
+	"go-keycloak-webapp/internal/web"
+	"go-keycloak-webapp/migrations"
 )
 
 func main() {
@@ -19,75 +23,61 @@ func main() {
 		log.Fatalf("config error: %v", err)
 	}
 
-	sessionStore := sessions.NewStore()
-
-	// 2. Kontext für Initialisierung
 	ctx := context.Background()
+	db, err := database.Open(ctx, cfg.Database.URL)
+	if err != nil {
+		log.Fatalf("database initialization failed: %v", err)
+	}
+	defer db.Close()
 
-	// 3. OIDC Provider initialisieren
+	migrationCtx, cancelMigrations := context.WithTimeout(ctx, 15*time.Second)
+	err = migrations.Apply(migrationCtx, db)
+	cancelMigrations()
+	if err != nil {
+		log.Fatalf("database migrations failed: %v", err)
+	}
+
+	sessionStore, err := sessions.NewStore(cfg.Session.Lifetime)
+	if err != nil {
+		log.Fatalf("session store initialization failed: %v", err)
+	}
+
+	// OIDC discovery initializes the provider before request handling starts.
 	oidcProvider, err := auth.NewProvider(
 		ctx,
+		cfg.OIDC.DiscoveryURL,
 		cfg.OIDC.Issuer,
 		cfg.OIDC.ClientID,
 		cfg.OIDC.ClientSecret,
 		cfg.OIDC.RedirectURL,
+		cfg.OIDC.AuthorizationURL,
 	)
 	if err != nil {
 		log.Fatalf("oidc initialization failed: %v", err)
 	}
 
-	// 4. State Store für OAuth2 state Parameter
 	stateStore := auth.NewStateStore()
 
-	// 5. Handler erzeugen
 	authHandler := &handlers.AuthHandler{
-		OIDC:     oidcProvider,
-		State:    stateStore,
-		Sessions: sessionStore,
+		OIDC:          oidcProvider,
+		State:         stateStore,
+		Sessions:      sessionStore,
+		Users:         users.NewSQLRepository(db),
+		SecureCookies: cfg.Session.CookieSecure,
 	}
 
-	// 6. HTTP Routing
-	mux := http.NewServeMux()
+	router, err := web.NewRouter(web.RouterDependencies{
+		AuthHandler:  authHandler,
+		Sessions:     sessionStore,
+		OIDCClientID: cfg.OIDC.ClientID,
+	})
+	if err != nil {
+		log.Fatalf("router initialization failed: %v", err)
+	}
 
-	profile := http.HandlerFunc(
-		func(w http.ResponseWriter, r *http.Request) {
-
-			user, _ := middleware.CurrentUser(r)
-
-			w.Write([]byte(
-				"Hello " + user.Username,
-			))
-		},
-	)
-
-	mux.Handle(
-		"/profile",
-		middleware.RequireAuth(
-			sessionStore,
-		)(profile),
-	)
-
-	mux.HandleFunc(
-		"/logout",
-		authHandler.Logout,
-	)
-
-	mux.HandleFunc(
-		"/auth/callback",
-		authHandler.Callback,
-	)
-
-	mux.HandleFunc(
-		"/",
-		func(w http.ResponseWriter, r *http.Request) {
-			w.Write([]byte("Hello from Go"))
-		},
-	)
-
-	// 7. HTTP Server
 	server := &http.Server{
 		Addr:    ":" + cfg.Server.Port,
-		Handler: mux,
+		Handler: router,
 	}
 
 	log.Printf(
@@ -95,7 +85,6 @@ func main() {
 		cfg.Server.Port,
 	)
 
-	// 8. Server starten
 	if err := server.ListenAndServe(); err != nil {
 		log.Fatal(err)
 	}

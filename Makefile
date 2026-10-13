@@ -7,4 +7,4 @@ start:
 	docker compose up -d --build app
 
 stop:
-	docker compose down -v
+	docker compose down

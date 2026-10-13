@@ -3,48 +3,90 @@ package sessions
 import (
 	"crypto/rand"
 	"encoding/hex"
+	"errors"
 	"sync"
+	"time"
 )
 
 type Session struct {
-	ID       string
-	UserID   string
-	Username string
-	Email    string
-	Roles    []string
+	ID        string
+	UserID    int64
+	Username  string
+	Email     string
+	Roles     []string
+	CSRFToken string
+}
+
+type storedSession struct {
+	session   Session
+	expiresAt time.Time
 }
 
 type Store struct {
-	mu       sync.RWMutex
-	sessions map[string]Session
+	mu       sync.Mutex
+	lifetime time.Duration
+	sessions map[string]storedSession
 }
 
-func NewStore() *Store {
-	return &Store{
-		sessions: make(map[string]Session),
+func NewStore(lifetime time.Duration) (*Store, error) {
+	if lifetime < time.Second {
+		return nil, errors.New("session lifetime must be at least one second")
 	}
+
+	return &Store{
+		lifetime: lifetime,
+		sessions: make(map[string]storedSession),
+	}, nil
 }
 
-func (s *Store) Create(session Session) string {
-	id := generateID()
+func (s *Store) Create(session Session) (string, error) {
+	id, err := generateID()
+	if err != nil {
+		return "", err
+	}
+	csrfToken, err := generateID()
+	if err != nil {
+		return "", err
+	}
 
 	session.ID = id
+	session.CSRFToken = csrfToken
+	session.Roles = append([]string(nil), session.Roles...)
 
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	s.sessions[id] = session
+	now := time.Now()
+	for key, value := range s.sessions {
+		if !now.Before(value.expiresAt) {
+			delete(s.sessions, key)
+		}
+	}
 
-	return id
+	s.sessions[id] = storedSession{
+		session:   session,
+		expiresAt: now.Add(s.lifetime),
+	}
+
+	return id, nil
 }
 
 func (s *Store) Get(id string) (Session, bool) {
-	s.mu.RLock()
-	defer s.mu.RUnlock()
+	s.mu.Lock()
+	defer s.mu.Unlock()
 
-	session, ok := s.sessions[id]
+	stored, ok := s.sessions[id]
+	if !ok {
+		return Session{}, false
+	}
+	if !time.Now().Before(stored.expiresAt) {
+		delete(s.sessions, id)
+		return Session{}, false
+	}
 
-	return session, ok
+	session := stored.session
+	session.Roles = append([]string(nil), session.Roles...)
+	return session, true
 }
 
 func (s *Store) Delete(id string) {
@@ -54,13 +96,16 @@ func (s *Store) Delete(id string) {
 	delete(s.sessions, id)
 }
 
-func generateID() string {
+func (s *Store) Lifetime() time.Duration {
+	return s.lifetime
+}
+
+func generateID() (string, error) {
 	bytes := make([]byte, 32)
 
-	_, err := rand.Read(bytes)
-	if err != nil {
-		panic(err)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
 	}
 
-	return hex.EncodeToString(bytes)
+	return hex.EncodeToString(bytes), nil
 }
